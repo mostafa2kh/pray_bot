@@ -5,7 +5,7 @@ const cron = require("node-cron");
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required.");
 
-const bot = new TelegramBot(token, { polling: true });
+const bot = new TelegramBot(token);
 
 const GROUP_ID = Number(process.env.TELEGRAM_GROUP_ID) || -1003975806017;
 
