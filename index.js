@@ -23,29 +23,34 @@ function to12h(time24) {
 }
 
 // -----------------------------
-// 📊 VOTE STORAGE — load from file or use defaults
+// 📊 LOAD RESULTS
 // -----------------------------
 function loadPollResults() {
   try {
     if (fs.existsSync(POLLS_FILE)) {
-      const data = JSON.parse(fs.readFileSync(POLLS_FILE, "utf8"));
-      return data;
+      return JSON.parse(fs.readFileSync(POLLS_FILE, "utf8"));
     }
   } catch (err) {
     console.log("Error reading polls.json:", err.message);
   }
+
   return {
-    Fajr:    { Yes: 0, Mosque: 0, Later: 0 },
-    Dhuhr:   { Yes: 0, Mosque: 0, Later: 0 },
-    Asr:     { Yes: 0, Mosque: 0, Later: 0 },
+    Fajr: { Yes: 0, Mosque: 0, Later: 0 },
+    Dhuhr: { Yes: 0, Mosque: 0, Later: 0 },
+    Asr: { Yes: 0, Mosque: 0, Later: 0 },
     Maghrib: { Yes: 0, Mosque: 0, Later: 0 },
-    Isha:    { Yes: 0, Mosque: 0, Later: 0 },
+    Isha: { Yes: 0, Mosque: 0, Later: 0 },
   };
 }
 
+let pollResults = loadPollResults();
+let pollMap = {};
+let prayerJobs = [];
+
+// -----------------------------
 function savePollResults() {
   try {
-    fs.writeFileSync(POLLS_FILE, JSON.stringify(pollResults, null, 2), "utf8");
+    fs.writeFileSync(POLLS_FILE, JSON.stringify(pollResults, null, 2));
   } catch (err) {
     console.log("Error saving polls.json:", err.message);
   }
@@ -58,22 +63,18 @@ function resetPollResults() {
   savePollResults();
 }
 
-let pollResults = loadPollResults();
-let pollMap = {};
-let prayerJobs = [];
-
 // -----------------------------
-// 🕌 GET PRAYER TIMES
+// 🕌 PRAYER API
 // -----------------------------
 async function getPrayers() {
   const res = await axios.get(
-    "https://api.aladhan.com/v1/timingsByCity?city=Cairo&country=Egypt&method=5",
+    "https://api.aladhan.com/v1/timingsByCity?city=Cairo&country=Egypt&method=5"
   );
   return res.data.data.timings;
 }
 
 // -----------------------------
-// ⏰ SCHEDULE PRAYERS
+// ⏰ SCHEDULE ALL PRAYERS
 // -----------------------------
 async function schedulePrayers() {
   try {
@@ -82,62 +83,84 @@ async function schedulePrayers() {
 
     const t = await getPrayers();
 
-    scheduleOne("Fajr",    t.Fajr);
-    scheduleOne("Dhuhr",   t.Dhuhr);
-    scheduleOne("Asr",     t.Asr);
+    scheduleOne("Fajr", t.Fajr);
+    scheduleOne("Dhuhr", t.Dhuhr);
+    scheduleOne("Asr", t.Asr);
     scheduleOne("Maghrib", t.Maghrib);
-    scheduleOne("Isha",    t.Isha);
+    scheduleOne("Isha", t.Isha);
 
-    console.log("🕌 Prayer schedule updated for today");
+    console.log("🕌 Prayer schedule updated");
   } catch (err) {
     console.log("Schedule error:", err.message);
   }
 }
 
 // -----------------------------
-// 🧠 SCHEDULE ONE PRAYER
+// 🧠 FIXED SCHEDULER
 // -----------------------------
 function scheduleOne(name, timeStr) {
   const [hour, minute] = timeStr.split(":").map(Number);
 
-  const totalMin  = hour * 60 + minute - 10;
+  const totalMin = hour * 60 + minute - 10;
   const remindMin = ((totalMin % 1440) + 1440) % 1440;
   const remindHour = Math.floor(remindMin / 60);
   const remindMinute = remindMin % 60;
 
-  const remindJob = cron.schedule(`${remindMinute} ${remindHour} * * *`, async () => {
-    try {
-      await bot.sendMessage(GROUP_ID, `⏰ ${name} prayer in 10 minutes (${to12h(timeStr)})`);
-    } catch (err) {
-      console.log(err.message);
-    }
-  }, { timezone: "Africa/Cairo" });
+  // reminder job
+  const remindJob = cron.schedule(
+    `${remindMinute} ${remindHour} * * *`,
+    async () => {
+      try {
+        await bot.sendMessage(
+          GROUP_ID,
+          `⏰ ${name} prayer in 10 minutes (${to12h(timeStr)})`
+        );
+      } catch (err) {
+        console.log(err.message);
+      }
+    },
+    { timezone: "Africa/Cairo" }
+  );
 
-  const prayJob = cron.schedule(`${minute} ${hour} * * *`, async () => {
-    try {
-      await bot.sendMessage(GROUP_ID, `🕌 ${name} prayer time is now (${to12h(timeStr)})`);
+  // prayer job
+  const prayJob = cron.schedule(
+    `${minute} ${hour} * * *`,
+    async () => {
+      try {
+        await bot.sendMessage(
+          GROUP_ID,
+          `🕌 ${name} prayer time is now (${to12h(timeStr)})`
+        );
 
-      // Poll options now match Yes / Mosque / Later tracking
-      const pollMsg = await bot.sendPoll(
-        GROUP_ID,
-        `Did you pray ${name}?`,
-        ["Yes ✅", "At Mosque 🕌", "Later ⏳"],
-        { is_anonymous: false }
-      );
+        const pollMsg = await bot.sendPoll(
+          GROUP_ID,
+          `Did you pray ${name}?`,
+          ["Yes ✅", "At Mosque 🕌", "Later ⏳"],
+          { is_anonymous: false }
+        );
 
-      pollMap[pollMsg.poll.id] = name;
-    } catch (err) {
-      console.log(err.message);
-    }
-  }, { timezone: "Africa/Cairo" });
+        pollMap[pollMsg.poll.id] = name;
+      } catch (err) {
+        console.log(err.message);
+      }
+    },
+    { timezone: "Africa/Cairo" }
+  );
 
   prayerJobs.push(remindJob, prayJob);
 
-  console.log(`Scheduled ${name} at ${to12h(timeStr)} (reminder at ${to12h(`${String(remindHour).padStart(2,"0")}:${String(remindMinute).padStart(2,"0")})})`);
+  // ✅ FIXED LOG (no template nesting bug)
+  const remindTime = `${String(remindHour).padStart(2, "0")}:${String(
+    remindMinute
+  ).padStart(2, "0")}`;
+
+  console.log(
+    `Scheduled ${name} at ${to12h(timeStr)} (reminder at ${to12h(remindTime)})`
+  );
 }
 
 // -----------------------------
-// 📊 POLL TRACKING — save after every vote
+// 📊 POLL TRACKING
 // -----------------------------
 bot.on("poll_answer", (answer) => {
   const pollId = answer.poll_id;
@@ -153,7 +176,7 @@ bot.on("poll_answer", (answer) => {
 
   if (choice && pollResults[prayer]) {
     pollResults[prayer][choice]++;
-    savePollResults(); // persist immediately after each vote
+    savePollResults();
   }
 });
 
@@ -170,133 +193,72 @@ bot.onText(/\/status/, (msg) => {
   bot.sendMessage(msg.chat.id, "🕌 Bot is running");
 });
 
-bot.onText(/\/help/, (msg) => {
-  if (msg.chat.id !== GROUP_ID) return;
-  const text =
-    `🕌 Prayer Bot — Commands\n\n` +
-    `/pray — Show all of today's prayer times\n` +
-    `/nextprayer — Show the next upcoming prayer\n` +
-    `/results — Show today's vote counts\n` +
-    `/status — Check the bot is running\n` +
-    `/help — Show this help message\n\n` +
-    `The bot automatically sends a message and poll at each prayer time every day 🕌`;
-  bot.sendMessage(msg.chat.id, text);
-});
-
 bot.onText(/\/pray/, async (msg) => {
   if (msg.chat.id !== GROUP_ID) return;
-  try {
-    const t = await getPrayers();
-    const text =
-      `🕌 Prayer Times (Cairo)\n\n` +
-      `🌅 Fajr:    ${to12h(t.Fajr)}\n` +
-      `☀️ Dhuhr:   ${to12h(t.Dhuhr)}\n` +
-      `🌤 Asr:     ${to12h(t.Asr)}\n` +
-      `🌇 Maghrib: ${to12h(t.Maghrib)}\n` +
-      `🌙 Isha:    ${to12h(t.Isha)}`;
-    bot.sendMessage(msg.chat.id, text);
-  } catch (err) {
-    bot.sendMessage(msg.chat.id, "❌ Error getting prayer times");
-  }
-});
 
-bot.onText(/\/nextprayer/, async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const res = await axios.get(
-      "https://api.aladhan.com/v1/timingsByCity?city=Cairo&country=Egypt&method=5",
-    );
-    const t = res.data.data.timings;
+  const t = await getPrayers();
 
-    const cairoTime = new Date().toLocaleString("en-US", { timeZone: "Africa/Cairo" });
-    const cairoDate = new Date(cairoTime);
-    const nowMin = cairoDate.getHours() * 60 + cairoDate.getMinutes();
+  const text =
+    `🕌 Prayer Times (Cairo)\n\n` +
+    `🌅 Fajr: ${to12h(t.Fajr)}\n` +
+    `☀️ Dhuhr: ${to12h(t.Dhuhr)}\n` +
+    `🌤 Asr: ${to12h(t.Asr)}\n` +
+    `🌇 Maghrib: ${to12h(t.Maghrib)}\n` +
+    `🌙 Isha: ${to12h(t.Isha)}`;
 
-    const prayers = [
-      { name: "Fajr",    time: t.Fajr },
-      { name: "Dhuhr",   time: t.Dhuhr },
-      { name: "Asr",     time: t.Asr },
-      { name: "Maghrib", time: t.Maghrib },
-      { name: "Isha",    time: t.Isha },
-    ];
-
-    const prayerMinutes = prayers.map((p) => {
-      const [h, m] = p.time.split(":").map(Number);
-      return { ...p, min: h * 60 + m };
-    });
-
-    let next = prayerMinutes.find((p) => p.min > nowMin);
-    if (!next) next = prayerMinutes[0];
-
-    await bot.sendMessage(
-      chatId,
-      `🕌 Next Prayer:\n\n➡️ ${next.name}\n🕒 ${to12h(next.time)}`,
-    );
-  } catch (err) {
-    console.log(err.message);
-    bot.sendMessage(chatId, "❌ Error getting prayer time");
-  }
+  bot.sendMessage(msg.chat.id, text);
 });
 
 bot.onText(/\/results/, (msg) => {
   if (msg.chat.id !== GROUP_ID) return;
-  let text = "📊 Today's Prayer Results\n\n";
+
+  let text = "📊 Today's Results\n\n";
+
   for (let prayer in pollResults) {
     const r = pollResults[prayer];
     const total = r.Yes + r.Mosque + r.Later;
+
     text += `🕌 ${prayer}\n`;
     text += `✅ Yes: ${r.Yes}\n`;
     text += `🕌 Mosque: ${r.Mosque}\n`;
     text += `⏳ Later: ${r.Later}\n`;
     text += `👥 Total: ${total}\n\n`;
   }
+
   bot.sendMessage(msg.chat.id, text);
 });
 
 // -----------------------------
-// 📊 DAILY REPORT + RESET (Cairo midnight)
+// 📊 MIDNIGHT RESET + REPORT
 // -----------------------------
-cron.schedule("0 0 * * *", async () => {
-  let text = "📊 Daily Prayer Results\n\n";
-  for (let prayer in pollResults) {
-    const r = pollResults[prayer];
-    const total = r.Yes + r.Mosque + r.Later;
-    text += `🕌 ${prayer}\n✅ Yes: ${r.Yes}\n🕌 Mosque: ${r.Mosque}\n⏳ Later: ${r.Later}\n👥 Total: ${total}\n\n`;
-  }
-  await bot.sendMessage(GROUP_ID, text);
+cron.schedule(
+  "0 0 * * *",
+  async () => {
+    let text = "📊 Daily Prayer Results\n\n";
 
-  resetPollResults(); // resets and saves polls.json
+    for (let prayer in pollResults) {
+      const r = pollResults[prayer];
+      const total = r.Yes + r.Mosque + r.Later;
 
-  console.log("📊 Daily report sent & votes reset");
+      text += `🕌 ${prayer}\n`;
+      text += `✅ Yes: ${r.Yes}\n`;
+      text += `🕌 Mosque: ${r.Mosque}\n`;
+      text += `⏳ Later: ${r.Later}\n`;
+      text += `👥 Total: ${total}\n\n`;
+    }
 
-  await schedulePrayers();
-}, { timezone: "Africa/Cairo" });
+    await bot.sendMessage(GROUP_ID, text);
+
+    resetPollResults();
+    await schedulePrayers();
+
+    console.log("📊 Daily report sent");
+  },
+  { timezone: "Africa/Cairo" }
+);
 
 // -----------------------------
-// 🚀 START BOT
+// 🚀 START
 // -----------------------------
-const commands = [
-  { command: "pray",        description: "Show today's prayer times" },
-  { command: "nextprayer",  description: "Show the next upcoming prayer" },
-  { command: "results",     description: "Show today's vote results" },
-  { command: "status",      description: "Check bot is running" },
-  { command: "help",        description: "Show all available commands" },
-  { command: "start",       description: "Start the bot" },
-];
-
-async function registerCommands() {
-  try {
-    await bot.setMyCommands(commands);
-    await bot.setMyCommands(commands, { scope: { type: "all_private_chats" } });
-    await bot.setMyCommands(commands, { scope: { type: "all_group_chats" } });
-    await bot.setMyCommands(commands, { scope: { type: "all_chat_administrators" } });
-    await bot.setMyCommands(commands, { scope: { type: "chat", chat_id: GROUP_ID } });
-    console.log("✅ Commands registered");
-  } catch (err) {
-    console.log("Command registration error:", err.message);
-  }
-}
-
 console.log("🕌 BOT RUNNING...");
-registerCommands();
 schedulePrayers();
