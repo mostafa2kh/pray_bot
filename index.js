@@ -1,123 +1,58 @@
-const axios = require("axios");
-const cron = require("node-cron");
-const fs = require("fs");
+import fs from "fs";
+import TelegramBot from "node-telegram-bot-api";
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const chatId = process.env.TELEGRAM_GROUP_ID;
+// ================== CONFIG ==================
+const TOKEN = "YOUR_BOT_TOKEN";
+const CHAT_ID = "YOUR_CHAT_ID";
 
-if (!token || !chatId) throw new Error("Missing env vars");
+// ================== BOT ==================
+const bot = new TelegramBot(TOKEN, { polling: true });
 
-const baseURL = `https://api.telegram.org/bot${token}`;
+// Track already sent prayers (to avoid spam)
+let sentToday = {};
 
-// -----------------------------
-// 📦 LOAD PERSISTENT POLLS
-// -----------------------------
-let polls = fs.existsSync("polls.json")
-    ? JSON.parse(fs.readFileSync("polls.json"))
-    : [];
-
-function savePolls() {
-    fs.writeFileSync("polls.json", JSON.stringify(polls, null, 2));
+// Load prayer times
+function loadPrayers() {
+  if (!fs.existsSync("prayer.json")) return null;
+  return JSON.parse(fs.readFileSync("prayer.json"));
 }
 
-// -----------------------------
-// 📡 TELEGRAM HELPERS
-// -----------------------------
-async function sendMessage(text) {
-    await axios.post(`${baseURL}/sendMessage`, {
-        chat_id: chatId,
-        text,
-    });
+// Reset at midnight
+function resetDaily() {
+  sentToday = {};
+  console.log("Daily reset done");
 }
 
-async function sendPoll(name) {
-    const res = await axios.post(`${baseURL}/sendPoll`, {
-        chat_id: chatId,
-        question: `Did you pray ${name}?`,
-        options: ["Yes", "No"],
-        is_anonymous: false,
-    });
-
-    polls.push({
-        name,
-        message_id: res.data.result.message_id,
-    });
-
-    savePolls();
+// Get current time HH:MM
+function getCurrentTime() {
+  const now = new Date();
+  return now.toTimeString().slice(0, 5);
 }
 
-// -----------------------------
-// 🕌 PRAYER TIMES (STATIC FOR GITHUB)
-// -----------------------------
-const prayers = {
-    Fajr: "05:10",
-    Dhuhr: "12:05",
-    Asr: "15:30",
-    Maghrib: "18:10",
-    Isha: "19:30",
-};
+// Check prayers every 30 seconds
+function checkPrayerTimes() {
+  const prayers = loadPrayers();
+  if (!prayers) return;
 
-// -----------------------------
-// ⏰ SCHEDULER
-// -----------------------------
-function schedulePrayer(name, time) {
-    const [h, m] = time.split(":");
+  const nowTime = getCurrentTime();
 
-    // 🔔 10 min before
-    let before = (parseInt(h) * 60 + parseInt(m)) - 10;
-    let bh = Math.floor(before / 60);
-    let bm = before % 60;
-
-    cron.schedule(`${bm} ${bh} * * *`, async () => {
-        await sendMessage(`⏰ ${name} in 10 minutes`);
-    }, { timezone: "Africa/Cairo" });
-
-    // 🕌 prayer time
-    cron.schedule(`${m} ${h} * * *`, async () => {
-        await sendMessage(`🕌 ${name} prayer time`);
-        await sendPoll(name);
-    }, { timezone: "Africa/Cairo" });
-}
-
-// -----------------------------
-// 📊 MIDNIGHT REPORT
-// -----------------------------
-cron.schedule("0 0 * * *", async () => {
-    let text = "📊 Daily Prayer Results\n\n";
-
-    for (let p of polls) {
-        try {
-            const res = await axios.post(`${baseURL}/stopPoll`, {
-                chat_id: chatId,
-                message_id: p.message_id,
-            });
-
-            const options = res.data.result.options;
-
-            const yes = options[0]?.voter_count || 0;
-            const no = options[1]?.voter_count || 0;
-
-            text += `🕌 ${p.name}\n`;
-            text += `✅ Yes: ${yes}\n`;
-            text += `❌ No: ${no}\n\n`;
-        } catch (err) {
-            text += `🕌 ${p.name}\n❌ Error getting results\n\n`;
-        }
+  for (const [name, time] of Object.entries(prayers)) {
+    if (time === nowTime && !sentToday[name]) {
+      bot.sendMessage(CHAT_ID, `🕌 It's time for ${name} prayer`);
+      sentToday[name] = true;
     }
-
-    await sendMessage(text);
-
-    // RESET
-    polls = [];
-    savePolls();
-
-}, { timezone: "Africa/Cairo" });
-
-// -----------------------------
-// 🚀 START SCHEDULING
-// -----------------------------
-for (let p in prayers) {
-    schedulePrayer(p, prayers[p]);
+  }
 }
 
-console.log("🕌 Bot running...");
+// ================== RUN LOOP ==================
+setInterval(checkPrayerTimes, 30000);
+
+// Reset at midnight logic
+setInterval(() => {
+  const now = new Date();
+  if (now.getHours() === 0 && now.getMinutes() === 0) {
+    resetDaily();
+  }
+}, 60000);
+
+console.log("Prayer bot is running...");
