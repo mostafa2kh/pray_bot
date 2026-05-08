@@ -1,6 +1,9 @@
+process.on("unhandledRejection", console.error);
+process.on("uncaughtException", console.error);
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const cron = require("node-cron");
+const fs = require("fs");
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required.");
@@ -10,7 +13,7 @@ const bot = new TelegramBot(token, { polling: true });
 const GROUP_ID = Number(process.env.TELEGRAM_GROUP_ID) || -1003975806017;
 
 // -----------------------------
-// 🕐 AM/PM HELPER
+// 🕐 TIME FORMAT
 // -----------------------------
 function to12h(time24) {
     const [h, m] = time24.split(":").map(Number);
@@ -20,9 +23,9 @@ function to12h(time24) {
 }
 
 // -----------------------------
-// 📊 VOTE STORAGE
+// 📊 STATE (PERSISTENT)
 // -----------------------------
-let pollResults = {
+const defaultResults = {
     Fajr: { Yes: 0, Mosque: 0, Later: 0 },
     Dhuhr: { Yes: 0, Mosque: 0, Later: 0 },
     Asr: { Yes: 0, Mosque: 0, Later: 0 },
@@ -30,11 +33,29 @@ let pollResults = {
     Isha: { Yes: 0, Mosque: 0, Later: 0 },
 };
 
+let pollResults = defaultResults;
+
+if (fs.existsSync("state.json")) {
+    try {
+        pollResults = JSON.parse(fs.readFileSync("state.json", "utf8"));
+        console.log("✅ Loaded saved state");
+    } catch (e) {
+        console.log("State load error:", e.message);
+    }
+}
+
+function saveState() {
+    fs.writeFileSync("state.json", JSON.stringify(pollResults, null, 2));
+}
+
+// -----------------------------
+// 🗺️ POLL MAP
+// -----------------------------
 let pollMap = {};
 let prayerJobs = [];
 
 // -----------------------------
-// 🕌 GET PRAYER TIMES
+// 🕌 GET PRAYERS
 // -----------------------------
 async function getPrayers() {
     const res = await axios.get(
@@ -70,10 +91,14 @@ function scheduleOne(name, timeStr) {
     const remindJob = cron.schedule(
         `${minute} ${hour} * * *`,
         async () => {
-            await bot.sendMessage(
-                GROUP_ID,
-                `⏰ ${name} prayer in 10 minutes (${to12h(timeStr)})`
-            );
+            try {
+                await bot.sendMessage(
+                    GROUP_ID,
+                    `⏰ ${name} prayer in 10 minutes (${to12h(timeStr)})`
+                );
+            } catch (e) {
+                console.log(e.message);
+            }
         },
         { timezone: "Africa/Cairo" }
     );
@@ -81,18 +106,22 @@ function scheduleOne(name, timeStr) {
     const prayJob = cron.schedule(
         `${minute} ${hour} * * *`,
         async () => {
-            await bot.sendMessage(
-                GROUP_ID,
-                `🕌 ${name} prayer time now (${to12h(timeStr)})`
-            );
+            try {
+                await bot.sendMessage(
+                    GROUP_ID,
+                    `🕌 ${name} prayer time now (${to12h(timeStr)})`
+                );
 
-            const pollMsg = await bot.sendPoll(
-                GROUP_ID,
-                `Did you pray ${name}?`,
-                ["Yes ✅", "Mosque 🕌", "Later ⏳"]
-            );
+                const pollMsg = await bot.sendPoll(
+                    GROUP_ID,
+                    `Did you pray ${name}?`,
+                    ["Yes ✅", "Mosque 🕌", "Later ⏳"]
+                );
 
-            pollMap[pollMsg.poll.id] = name;
+                pollMap[pollMsg.poll.id] = name;
+            } catch (e) {
+                console.log(e.message);
+            }
         },
         { timezone: "Africa/Cairo" }
     );
@@ -104,18 +133,26 @@ function scheduleOne(name, timeStr) {
 // 📊 POLL ANSWERS
 // -----------------------------
 bot.on("poll_answer", (answer) => {
-    const pollId = answer.poll_id;
-    const option = answer.option_ids[0];
+    try {
+        const pollId = answer.poll_id;
+        const option = answer.option_ids[0];
 
-    const prayer = pollMap[pollId];
-    if (!prayer) return;
+        const prayer = pollMap[pollId];
+        if (!prayer) return;
 
-    let choice = "";
-    if (option === 0) choice = "Yes";
-    else if (option === 1) choice = "Mosque";
-    else if (option === 2) choice = "Later";
+        let choice = "";
+        if (option === 0) choice = "Yes";
+        else if (option === 1) choice = "Mosque";
+        else if (option === 2) choice = "Later";
+        else return;
 
-    pollResults[prayer][choice]++;
+        pollResults[prayer][choice]++;
+        saveState();
+
+        console.log(`📊 ${prayer}: ${choice}`);
+    } catch (e) {
+        console.log(e.message);
+    }
 });
 
 // -----------------------------
@@ -131,42 +168,46 @@ bot.onText(/\/status/, (msg) => {
     bot.sendMessage(msg.chat.id, "🕌 Bot is running");
 });
 
-bot.onText(/\/help/, (msg) => {
-    if (msg.chat.id !== GROUP_ID) return;
-
-    bot.sendMessage(
-        msg.chat.id,
-        "🕌 Commands:\n/pray\n/nextprayer\n/results\n/status\n/help"
-    );
-});
-
 bot.onText(/\/pray/, async (msg) => {
     if (msg.chat.id !== GROUP_ID) return;
 
     const t = await getPrayers();
 
-    bot.sendMessage(
-        msg.chat.id,
-        `🕌 Prayer Times\n\nFajr: ${to12h(t.Fajr)}\nDhuhr: ${to12h(t.Dhuhr)}\nAsr: ${to12h(t.Asr)}\nMaghrib: ${to12h(t.Maghrib)}\nIsha: ${to12h(t.Isha)}`
-    );
+    const text =
+        `🕌 Prayer Times\n\n` +
+        `Fajr: ${to12h(t.Fajr)}\n` +
+        `Dhuhr: ${to12h(t.Dhuhr)}\n` +
+        `Asr: ${to12h(t.Asr)}\n` +
+        `Maghrib: ${to12h(t.Maghrib)}\n` +
+        `Isha: ${to12h(t.Isha)}`;
+
+    bot.sendMessage(msg.chat.id, text);
 });
 
 // -----------------------------
-// 📊 DAILY RESET
+// 📊 DAILY RESET (MIDNIGHT)
 // -----------------------------
 cron.schedule("0 0 * * *", async () => {
-    let text = "📊 Daily Results\n\n";
+    let text = "📊 Daily Prayer Results\n\n";
 
     for (let p in pollResults) {
         const r = pollResults[p];
-        text += `🕌 ${p}\nYes: ${r.Yes}\nMosque: ${r.Mosque}\nLater: ${r.Later}\n\n`;
+        const total = r.Yes + r.Mosque + r.Later;
+
+        text += `🕌 ${p}\n`;
+        text += `✅ Yes: ${r.Yes}\n`;
+        text += `🕌 Mosque: ${r.Mosque}\n`;
+        text += `⏳ Later: ${r.Later}\n`;
+        text += `👥 Total: ${total}\n\n`;
     }
 
     await bot.sendMessage(GROUP_ID, text);
 
-    for (let p in pollResults) {
-        pollResults[p] = { Yes: 0, Mosque: 0, Later: 0 };
-    }
+    // RESET
+    pollResults = defaultResults;
+    saveState();
+
+    console.log("📊 Reset done");
 
     await schedulePrayers();
 }, { timezone: "Africa/Cairo" });
