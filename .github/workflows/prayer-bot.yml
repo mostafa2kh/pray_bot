@@ -1,12 +1,12 @@
-name: Prayer Bot
+name: Update Prayer Times
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0 0 * * *"  # every day at midnight
   workflow_dispatch:
 
 jobs:
-  run:
+  update:
     runs-on: ubuntu-latest
 
     steps:
@@ -14,11 +14,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
-      - run: npm install axios node-cron
+      - run: npm install
 
-      - run: node index.js
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_GROUP_ID: ${{ secrets.TELEGRAM_GROUP_ID }}
+      - run: node update.js
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add prayer.json
+          git commit -m "update prayer times" || exit 0
+          git push
