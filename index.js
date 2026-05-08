@@ -1,3 +1,7 @@
+process.on("unhandledRejection", console.error);
+process.on("uncaughtException", console.error);
+
+
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const cron = require("node-cron");
@@ -5,8 +9,7 @@ const cron = require("node-cron");
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required.");
 
-const bot = new TelegramBot(token);
-
+const bot = new TelegramBot(token, { polling: true });
 const GROUP_ID = Number(process.env.TELEGRAM_GROUP_ID) || -1003975806017;
 
 // -----------------------------
